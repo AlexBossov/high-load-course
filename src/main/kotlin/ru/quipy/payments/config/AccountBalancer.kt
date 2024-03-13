@@ -64,34 +64,26 @@ class AccountBalancer {
 
         while (true) {
             val accountProps4Count = accounts[accountProps_4]!!.get()
-            val accountProps3Count = accounts[accountProps_3]!!.get()
             val accountProps2Count = accounts[accountProps_2]!!.get()
-            val accountProps1Count = accounts[accountProps_1]!!.get()
 
-            if (accountProps4Count <= 5) {
-                if (!accounts[accountProps_4]!!.compareAndSet(accountProps4Count, accountProps4Count + 1))
+            return when {
+                accountProps4Count <= 5 -> {
+                    if (!accounts[accountProps_4]!!.compareAndSet(accountProps4Count, accountProps4Count + 1))
+                        continue
+
+                    logger.error("Account 4 acquired $accountProps4Count")
+                    accountProps_4
+                }
+                accountProps2Count <= 30 -> {
+                    if (!accounts[accountProps_2]!!.compareAndSet(accountProps2Count, accountProps2Count + 1))
+                        continue
+
+                    logger.error("Account 2 acquired $accountProps2Count")
+                    accountProps_2
+                }
+                else -> {
                     continue
-
-                logger.error("Account 4 acquired $accountProps4Count")
-                return accountProps_4
-            } else if (accountProps3Count <= 8) {
-                if (!accounts[accountProps_3]!!.compareAndSet(accountProps3Count, accountProps3Count + 1))
-                    continue
-
-                logger.error("Account 3 acquired $accountProps3Count")
-                return accountProps_3
-            } else if (accountProps2Count <= 30) {
-                if (!accounts[accountProps_2]!!.compareAndSet(accountProps2Count, accountProps2Count + 1))
-                    continue
-
-                logger.error("Account 2 acquired $accountProps2Count")
-                return accountProps_2
-            } else {
-                if (!accounts[accountProps_1]!!.compareAndSet(accountProps1Count, accountProps1Count + 1))
-                    continue
-
-                logger.error("Account 1 acquired $accountProps1Count")
-                return accountProps_1
+                }
             }
         }
     }
