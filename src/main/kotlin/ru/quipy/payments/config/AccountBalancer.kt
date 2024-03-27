@@ -52,43 +52,49 @@ class AccountBalancer {
             request95thPercentileProcessingTime = Duration.ofMillis(10_000),
         )
 
-        private val accounts: Map<ExternalServiceProperties, AtomicLong> = mapOf(
-            accountProps_1 to AtomicLong(0),
-            accountProps_2 to AtomicLong(0),
-            accountProps_3 to AtomicLong(0),
-            accountProps_4 to AtomicLong(0)
+        private val maxRequests4 =
+            accountProps_4.parallelRequests * 80 / accountProps_4.request95thPercentileProcessingTime.seconds
+        private val maxRequests3 =
+            accountProps_3.parallelRequests * 80 / accountProps_3.request95thPercentileProcessingTime.seconds + maxRequests4
+        private val maxRequests2 =
+            accountProps_2.parallelRequests * 80 / accountProps_2.request95thPercentileProcessingTime.seconds + maxRequests3
+
+        private val accounts: Map<ExternalServiceProperties, MyRateLimiter> = mapOf(
+            accountProps_1 to MyRateLimiter(accountProps_1.rateLimitPerSec, accountProps_1.parallelRequests),
+            accountProps_2 to MyRateLimiter(accountProps_2.rateLimitPerSec, accountProps_2.parallelRequests),
+            accountProps_3 to MyRateLimiter(accountProps_3.rateLimitPerSec, accountProps_3.parallelRequests),
+            accountProps_4 to MyRateLimiter(accountProps_4.rateLimitPerSec, accountProps_4.parallelRequests)
         )
+
+        private val requestCounter = AtomicLong(0)
     }
 
     fun getAccount(): ExternalServiceProperties {
 
+        val count = requestCounter.incrementAndGet()
         while (true) {
-            val accountProps4Count = accounts[accountProps_4]!!.get()
-            val accountProps2Count = accounts[accountProps_2]!!.get()
-
-            return when {
-                accountProps4Count <= 5 -> {
-                    if (!accounts[accountProps_4]!!.compareAndSet(accountProps4Count, accountProps4Count + 1))
-                        continue
-
-                    logger.error("Account 4 acquired $accountProps4Count")
-                    accountProps_4
-                }
-                accountProps2Count <= 30 -> {
-                    if (!accounts[accountProps_2]!!.compareAndSet(accountProps2Count, accountProps2Count + 1))
-                        continue
-
-                    logger.error("Account 2 acquired $accountProps2Count")
-                    accountProps_2
-                }
-                else -> {
-                    continue
-                }
+            if (count <= maxRequests4) {
+                accounts[accountProps_4]!!.tickBlocking()
+                logger.error("Account 4 acquired")
+                return accountProps_4
+            } else if (count <= maxRequests3) {
+                accounts[accountProps_3]!!.tickBlocking()
+                logger.error("Account 3 acquired")
+                return accountProps_3
+            } else if (count <= maxRequests2) {
+                accounts[accountProps_2]!!.tickBlocking()
+                logger.error("Account 2 acquired")
+                return accountProps_2
+            } else {
+                accounts[accountProps_1]!!.tickBlocking()
+                logger.error("Account 1 acquired")
+                return accountProps_1
             }
         }
     }
 
     fun resize(accountProps: ExternalServiceProperties) {
-        accounts[accountProps]?.decrementAndGet()
+        requestCounter.decrementAndGet()
+        accounts[accountProps]!!.release()
     }
 }

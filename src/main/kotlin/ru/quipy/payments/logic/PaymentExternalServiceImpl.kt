@@ -42,10 +42,12 @@ class PaymentExternalServiceImpl(
 
     private val httpClientExecutor = Executors.newSingleThreadExecutor()
 
-    private val client = OkHttpClient.Builder().run {
-        dispatcher(Dispatcher(httpClientExecutor))
-        build()
-    }
+    private val client = OkHttpClient.Builder()
+        .dispatcher(Dispatcher().apply {
+            maxRequests = Int.MAX_VALUE
+            maxRequestsPerHost = Int.MAX_VALUE
+        })
+        .build()
 
     override fun submitPaymentRequest(paymentId: UUID, amount: Int, paymentStartedAt: Long) {
 
@@ -83,8 +85,6 @@ class PaymentExternalServiceImpl(
                 paymentESService.update(paymentId) {
                     it.logProcessing(body.result, now(), transactionId, reason = body.message)
                 }
-
-                accountBalancer.resize(account)
             }
         } catch (e: Exception) {
             when (e) {
@@ -105,6 +105,8 @@ class PaymentExternalServiceImpl(
                     }
                 }
             }
+        } finally {
+            accountBalancer.resize(account)
         }
     }
 }
