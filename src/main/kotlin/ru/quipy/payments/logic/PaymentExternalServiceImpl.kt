@@ -2,15 +2,13 @@ package ru.quipy.payments.logic
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
-import okhttp3.Dispatcher
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody
+import okhttp3.*
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
 import ru.quipy.payments.config.AccountBalancer
+import java.io.IOException
 import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.*
@@ -19,35 +17,19 @@ import java.util.concurrent.Executors
 
 // Advice: always treat time as a Duration
 class PaymentExternalServiceImpl(
-    private val accountBalancer: AccountBalancer
+    private val accountBalancer: AccountBalancer,
+    private val client: OkHttpClient
 ) : PaymentExternalService {
 
     companion object {
         val logger = LoggerFactory.getLogger(PaymentExternalServiceImpl::class.java)
 
-        val paymentOperationTimeout = Duration.ofSeconds(80)
-
         val emptyBody = RequestBody.create(null, ByteArray(0))
         val mapper = ObjectMapper().registerKotlinModule()
     }
 
-//    private val serviceName = properties.serviceName
-//    private val accountName = properties.accountName
-//    private val requestAverageProcessingTime = properties.request95thPercentileProcessingTime
-//    private val rateLimitPerSec = properties.rateLimitPerSec
-//    private val parallelRequests = properties.parallelRequests
-
     @Autowired
     private lateinit var paymentESService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>
-
-    private val httpClientExecutor = Executors.newSingleThreadExecutor()
-
-    private val client = OkHttpClient.Builder()
-        .dispatcher(Dispatcher().apply {
-            maxRequests = Int.MAX_VALUE
-            maxRequestsPerHost = Int.MAX_VALUE
-        })
-        .build()
 
     override fun submitPaymentRequest(paymentId: UUID, amount: Int, paymentStartedAt: Long) {
 
@@ -69,8 +51,10 @@ class PaymentExternalServiceImpl(
             post(emptyBody)
         }.build()
 
-        try {
-            client.newCall(request).execute().use { response ->
+        val call: Call = client.newCall(request)
+
+        call.enqueue(object : Callback {
+            override fun onResponse(call: Call, response: Response) {
                 val body = try {
                     mapper.readValue(response.body?.string(), ExternalSysResponse::class.java)
                 } catch (e: Exception) {
@@ -85,29 +69,36 @@ class PaymentExternalServiceImpl(
                 paymentESService.update(paymentId) {
                     it.logProcessing(body.result, now(), transactionId, reason = body.message)
                 }
+
+                logger.warn("[${account.accountName}] Submitting payment request for payment $paymentId. Success: ${now() - paymentStartedAt} ms")
+                accountBalancer.resize(account)
             }
-        } catch (e: Exception) {
-            when (e) {
-                is SocketTimeoutException -> {
-                    paymentESService.update(paymentId) {
-                        it.logProcessing(false, now(), transactionId, reason = "Request timeout.")
+
+            override fun onFailure(call: Call, e: IOException) {
+                println(e.message)
+                when (e) {
+                    is SocketTimeoutException -> {
+                        paymentESService.update(paymentId) {
+                            it.logProcessing(false, now(), transactionId, reason = "Request timeout.")
+                        }
+                    }
+
+                    else -> {
+                        logger.error(
+                            "[${account.accountName}] Payment failed for txId: $transactionId, payment: $paymentId",
+                            e
+                        )
+
+                        paymentESService.update(paymentId) {
+                            it.logProcessing(false, now(), transactionId, reason = e.message)
+                        }
                     }
                 }
 
-                else -> {
-                    logger.error(
-                        "[${account.accountName}] Payment failed for txId: $transactionId, payment: $paymentId",
-                        e
-                    )
-
-                    paymentESService.update(paymentId) {
-                        it.logProcessing(false, now(), transactionId, reason = e.message)
-                    }
-                }
+                logger.warn("[${account.accountName}] Submitting payment request for payment $paymentId. Fail: ${now() - paymentStartedAt} ms")
+                accountBalancer.resize(account)
             }
-        } finally {
-            accountBalancer.resize(account)
-        }
+        })
     }
 }
 
